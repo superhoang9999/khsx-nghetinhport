@@ -1,0 +1,9 @@
+{
+  "name": "khsx-nghetinhport",
+  "version": "1.0.0",
+  "private": true,
+  "description": "KHSX Nghe Tinh Port - Netlify + Supabase",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.57.4"
+  }
+}
