@@ -28,6 +28,161 @@
     return data;
   }
 
+
+  function recoveryParams(){
+    const hash = new URLSearchParams((location.hash || '').replace(/^#/, ''));
+    const query = new URLSearchParams(location.search || '');
+    return {
+      type: hash.get('type') || query.get('type') || '',
+      accessToken: hash.get('access_token') || '',
+      refreshToken: hash.get('refresh_token') || '',
+      code: query.get('code') || ''
+    };
+  }
+
+  function cleanRecoveryUrl(){
+    try{
+      history.replaceState({}, document.title, location.pathname);
+    }catch(_){}
+  }
+
+  function renderRecoveryForm(message=''){
+    const login = $('#login');
+    const app = $('#app');
+    if(app) app.style.display='none';
+    if(login) login.style.display='grid';
+
+    const card = $('.login-card');
+    if(!card) return;
+
+    card.innerHTML = `
+      <div class="login-logo">⚓</div>
+      <h1>Đặt mật khẩu mới</h1>
+      <p>Cảng Nghệ Tĩnh • Kế hoạch sản xuất</p>
+      ${message ? `<div class="demo-note">${esc(message)}</div>` : `
+        <div class="demo-note">
+          Liên kết khôi phục mật khẩu đã được xác thực.
+          Hãy nhập mật khẩu mới cho tài khoản của bạn.
+        </div>
+      `}
+      <form id="recoveryForm">
+        <div class="field">
+          <label>Mật khẩu mới</label>
+          <input id="newPassword" type="password" minlength="8"
+                 autocomplete="new-password" required
+                 placeholder="Tối thiểu 8 ký tự" />
+        </div>
+        <div class="field">
+          <label>Nhập lại mật khẩu</label>
+          <input id="confirmPassword" type="password" minlength="8"
+                 autocomplete="new-password" required
+                 placeholder="Nhập lại mật khẩu mới" />
+        </div>
+        <button class="btn btn-primary btn-block" type="submit">
+          Cập nhật mật khẩu
+        </button>
+        <button class="btn btn-secondary btn-block" type="button" id="backToLogin">
+          Quay về đăng nhập
+        </button>
+      </form>
+    `;
+
+    $('#backToLogin')?.addEventListener('click', async () => {
+      try{ await sb?.auth?.signOut(); }catch(_){}
+      cleanRecoveryUrl();
+      location.reload();
+    });
+
+    $('#recoveryForm')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      const password = $('#newPassword')?.value || '';
+      const confirm = $('#confirmPassword')?.value || '';
+      const btn = e.currentTarget.querySelector('button[type="submit"]');
+
+      if(password.length < 8){
+        toast('Mật khẩu phải có ít nhất 8 ký tự.');
+        return;
+      }
+      if(password !== confirm){
+        toast('Hai lần nhập mật khẩu chưa khớp.');
+        return;
+      }
+
+      const old = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Đang cập nhật...';
+
+      try{
+        const { error } = await sb.auth.updateUser({ password });
+        if(error) throw error;
+
+        await sb.auth.signOut();
+        cleanRecoveryUrl();
+
+        card.innerHTML = `
+          <div class="login-logo">✓</div>
+          <h1>Đổi mật khẩu thành công</h1>
+          <p>Cảng Nghệ Tĩnh • Kế hoạch sản xuất</p>
+          <div class="demo-note">
+            Mật khẩu mới đã được cập nhật. Anh/chị có thể đăng nhập lại ngay.
+          </div>
+          <button class="btn btn-primary btn-block" id="reloginBtn">
+            Về trang đăng nhập
+          </button>
+        `;
+        $('#reloginBtn')?.addEventListener('click', () => location.reload());
+      }catch(err){
+        console.error(err);
+        toast(err?.message || 'Không cập nhật được mật khẩu.');
+        btn.disabled = false;
+        btn.textContent = old;
+      }
+    });
+  }
+
+  async function handleRecoveryFlow(){
+    const p = recoveryParams();
+
+    const looksLikeRecovery =
+      p.type === 'recovery' ||
+      (!!p.accessToken && !!p.refreshToken) ||
+      !!p.code;
+
+    if(!looksLikeRecovery) return false;
+
+    try{
+      if(p.accessToken && p.refreshToken){
+        const { error } = await sb.auth.setSession({
+          access_token: p.accessToken,
+          refresh_token: p.refreshToken
+        });
+        if(error) throw error;
+      }else if(p.code){
+        const { error } = await sb.auth.exchangeCodeForSession(p.code);
+        if(error) throw error;
+      }else{
+        const { data:{session}, error } = await sb.auth.getSession();
+        if(error) throw error;
+        if(!session) throw new Error('Liên kết khôi phục không còn phiên đăng nhập hợp lệ.');
+      }
+
+      const { data:{session}, error } = await sb.auth.getSession();
+      if(error) throw error;
+      if(!session) throw new Error('Liên kết khôi phục đã hết hạn hoặc không hợp lệ.');
+
+      renderRecoveryForm();
+      return true;
+    }catch(err){
+      console.error('Recovery error:', err);
+      renderRecoveryForm(
+        'Liên kết đặt lại mật khẩu đã hết hạn hoặc không hợp lệ. ' +
+        'Hãy gửi một yêu cầu đặt lại mật khẩu mới từ Supabase.'
+      );
+      return true;
+    }
+  }
+
   async function init(){
     try{
       cfg = await fetch('/.netlify/functions/config').then(r => {
@@ -48,6 +203,12 @@
         form.addEventListener('submit', realLogin);
       }
       document.querySelectorAll('[data-demo-login]').forEach(x => x.closest('.demo-accounts')?.classList.add('hidden'));
+
+      // Password recovery must be handled before normal auto-login.
+      if(await handleRecoveryFlow()){
+        observeAdmin();
+        return;
+      }
 
       const logoutOld = $('#logoutBtn');
       if(logoutOld){
